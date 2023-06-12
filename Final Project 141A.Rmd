@@ -1,0 +1,594 @@
+---
+title: "Predicting Cognitive Behaviors(feedback)"
+author: "Sina Khazaei - 916082604"
+date: "2023-05-14"
+output: html_document
+---
+
+
+
+## Abstract:
+For this project we started off by looking into the Data structures of the sessions observing trends and correlations to use as a way to build up our integration model. Through this we us utilize our integration model to develop and construct a logistic regression model that will ultimately be used in a prediction model where it will predict the out come of a test data to determine how accurate our model was. We will use a misclassification rate to determine the accuracy of our results. 
+
+## Section 1: Introduction: 
+
+In the evolving field of neuroscience the ability to predict behavior outcomes is essential and a subject of interest in a rapidly growing field. The reason this field is of great importance is due to the fact that it allows us to potentially predict outcomes and behavior patterns in humans and target/identify potential neural problems through building accurate and well integrated prediction models along with making major advancements in cognitive neurobiology. The aim of this report is to create a logistic regression prediction model that will help us predict the outcomes of individual trials using neural activity data and the visual stimuli to predict feedback(success = 1, failure = -1). The feedback will allow us to test and determine if our prediction model was truly accurate and will provide benefits for future model design in predicting behavior outcome.  The data we plan to use today was from an experiment conducted by Steinmetz et al.(2019). Steinmetz conducted his experiment on a total of 10 mice. over 39 sessions total. For this prediction model we will only look at sessions 1-18. Each session is composed of hundreds of trials. The experiment used visual stimuli in contrast levels (0,.25,.5,1), with 0 meaning no stimulus and so on with 1 being full stimulus, and mice were required to make a decision based on this stimuli. The activity of the neurons measured the neurons in mice visual cortex. For this project we will only focus on the spike train of neurons from the onset of the stimuli to .4 seconds post-onset. 
+
+ 
+
+
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r}
+suppressWarnings(library(tidyverse))
+suppressWarnings(library(knitr))
+suppressWarnings(library(dplyr))
+
+
+library(tidyverse)
+library(ggplot2)
+library(knitr)
+library(dplyr)
+
+
+
+```
+
+## Section 2: Exploratory Analysis
+```{r}
+setwd("/Users/Sina Khazaei/Desktop/sessions")
+
+session = list()
+for(i in 1:18){
+  session[[i]] = readRDS(paste("/Users/Sina Khazaei/Desktop/sessions/session", i, ".rds", sep=""))
+ 
+}
+
+```
+
+
+```{r}
+
+n.session=length(session)
+
+meta <- tibble(
+  mouse_name = rep('name',n.session),
+  date_exp =rep('dt',n.session),
+  n_brain_area = rep(0,n.session),
+  n_neurons = rep(0,n.session),
+  n_trials = rep(0,n.session),
+  success_rate = rep(0,n.session)
+)
+
+
+for(i in 1:n.session){
+  tmp = session[[i]];
+  meta[i,1]=tmp$mouse_name;
+  meta[i,2]=tmp$date_exp;
+  meta[i,3]=length(unique(tmp$brain_area));
+  meta[i,4]=dim(tmp$spks[[1]])[1];
+  meta[i,5]=length(tmp$feedback_type);
+  meta[i,6]=mean(tmp$feedback_type+1)/2;
+}
+
+
+kable(meta, format = "html", table.attr = "class='table table-striped'",digits=2) 
+
+
+```
+
+
+Summary of information across all sessions. The summary is based off the name of the mice and the date that experiments were done on them. It summarizes the data by mice giving an insight to important variables such as n_neurons, n_trials, n_brain_areas, and success_rate. This also gives us insight to the number of brain areas studied in each mice. This is important because we can see that almost all sessions differ in the brain area they cover and the amount of neurons for each mice. This means that specific sessions cannot be used rather integrating the whole sessions data set may be more efficient to give us more flexibility to have our prediction model account for more factors to predict feedback due to the large variability in brain areas, neuron number, trials, and success rate.
+
+
+
+
+
+
+
+
+
+```{r}
+density_data <- data.frame()
+
+for (i in 1:18) {
+  session_data <- session[[i]]$spks
+
+  pulse_rates <- lapply(session_data, function(trial) colSums(trial)/ncol(trial))
+    pulse_rates <- unlist(pulse_rates)
+  
+
+  density_data <- rbind(density_data, 
+                        data.frame(Session = i, PulseRate = pulse_rates))
+}
+
+density_objects <- lapply(split(density_data$PulseRate, density_data$Session), density)
+
+max_density_locations <- sapply(density_objects, function(x) x$x[which.max(x$y)])
+
+ggplot(density_data, aes(x = PulseRate, color = as.factor(Session))) +
+  geom_density(alpha = 0.4) +
+  labs(x = "Pulse Rate (average spikes per time bin)", 
+       y = "Density", 
+       color = "Session") +
+  theme_minimal() +
+  geom_text(data = data.frame(Session = names(max_density_locations), 
+                              PulseRate = max_density_locations, 
+                              Density = sapply(density_objects, function(x) max(x$y))),
+            aes(x = PulseRate, y = Density, label = Session),
+            nudge_y = 0.02, 
+            color = "black",
+            size = 3)  
+
+```
+
+
+Here we created a Density vs Pulse rate chart comparing all 18 sessions to each other. The pulse rate is average spikes per time bin. Average Spikes per time bin refers to the average amount of spikes (neuron firings) was recorded in a specific time interval over all trials in that specific session. Creating this graph we can see that on average all the sessions have a pulse rate that is below or around 1 for pulse rate. But we can also see that session 13 does appear to be an outlier. The reasoning behind this is that it is quite clear that the pulse rate for session 13 greatly exceeds that of the rest. Session 13 on the graph is seen further out from the rest of all the other sessions.We can also observe how session 16, 17, 6, and 14  is also an outlier with its pulse rate being quite low but having a very high density. These are quite different with the rest of our data. This graph is vital in our integration as we can observe the distribution of pulse rate and use that as our predictor for our integration. It allows us to see a patter of what the expected pulse rate should be when comparing to the density and will be vital for the integrating. 
+
+
+
+
+```{r}
+density_data <- data.frame()
+
+for (i in 1:18) {
+  session_data <- session[[i]]$spks
+  
+  pulse_rates <- lapply(session_data, function(trial) colSums(trial)/ncol(trial))
+  pulse_rates <- unlist(pulse_rates)
+  
+  density_data <- rbind(density_data, 
+                        data.frame(Mouse = session[[i]]$mouse_name,
+                                   PulseRate = pulse_rates))
+}
+
+ggplot(density_data, aes(x = PulseRate, fill = as.factor(Mouse))) +
+  geom_density(alpha = 0.4) +
+  labs(x = "Pulse Rate (Avg. spikes per time bin)", 
+       y = "Density", 
+       fill = "Mouse Namee") +
+  theme_minimal() +
+  guides(fill = guide_legend(override.aes = list(alpha = 1)))
+
+```
+
+Here we then made a pulse rate vs density graph for each moue. Here we can see pretty clear homogeneity across the 4 mice. The data is pretty clear that the pulse rate when varying by mouse name does not clearly impact the data by much as a result this will not be used for our integration although it does give insight to the homogeneity of pulse rate between the 4 mice in the trials. 
+
+
+
+```{r}
+sessions_of_interest <- c(1:18)
+
+density_data <- data.frame()
+
+peak_data <- data.frame()
+
+for(i in sessions_of_interest){
+  avg_spikes <- unlist(lapply(session[[i]]$spks, function(x) mean(rowSums(x))))
+  
+  density_spikes <- density(avg_spikes)
+  
+  temp_data <- data.frame(x = density_spikes$x, y = density_spikes$y, session = i)
+  
+  
+  density_data <- rbind(density_data, temp_data)
+  
+  peak <- temp_data[which.max(temp_data$y), ]
+  
+  peak_data <- rbind(peak_data, peak)
+}
+
+ggplot() +
+  geom_line(data = density_data, aes(x = x, y = y, color = as.factor(session))) +
+  geom_text(data = peak_data, aes(x = x, y = y, label = session), vjust = -1, size = 3) +
+  labs(x = "Average Spikes Per Neuron Per Trial", y = "Density", color = "Session") +
+  theme(legend.position = "none")  
+
+```
+
+Here we have created a Average spikes per neuron per trial vs density plot that shows all 18 sessions onto one graph. This here is vital as it shows us the distribution of spikes per neuron disregarding the brain area of interest. This data is actually beneficial as it shows is the distribution of average spikes per neuron. We can see a majority of the data falls around .5- 1.5 spikes per neuron with a density of around 2. There are a few outliers that will add variability but this data we can see trends that show where the average spike per neuron lays for session 18 and 1 allowing us to build a better integration model. The ouliers are again session 13, which as we saw before was an outlier for density vs pulse rate. Along with this we can see that session 6 and 3 are outliers due the session 6 having an exceedingly high density and session 3 having a much higher average spikes per neuron per trial. 
+
+
+
+
+
+```{r}
+
+avg_pulse_rate_feedback <- data.frame()
+
+sessions_of_interest <- c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+
+for (session_num in sessions_of_interest) {
+  session_data <- session[[session_num]]
+  
+ 
+  pulse_rates <- sapply(session_data$spks, function(trial) sum(trial) / ncol(trial))
+  
+ 
+  session_df <- data.frame(PulseRate = pulse_rates, Feedback = session_data$feedback_type)
+
+  session_df$Session <- session_num
+
+  avg_pulse_rate_feedback <- rbind(avg_pulse_rate_feedback, session_df)
+}
+
+
+ggplot(avg_pulse_rate_feedback, aes(x = as.factor(Session), y = PulseRate, fill = as.factor(Feedback))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Session", y = "Pulse Rate", fill = "Feedback") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("darkblue", "darkorange"), labels = c("Failure", "Success"))
+
+```
+
+Here we created an a pulse rate vs feedback result for each session in hopes of looking for a trend in pulse rate. We can see that the pulse rate for all sessions except session 1 is higher when the feedback result is positive rather than when it gives a feedback result of failure. This is useful to us as it will help us see that the pulse rate can be in indicator for what the feedback result could be. This will be useful to be added as a part of our data integration. There is no pattern across sessions rather that each session shows that a positive feedback has a higher pulse rate excluding session one which is the outlier in this case. 
+
+
+ 
+
+```{r}
+
+avg_spikes_per_trial <- data.frame()
+
+sessions_of_interest <- c(1, 2, 5, 18)
+
+for (session_num in sessions_of_interest) {
+  session_data <- session[[session_num]]
+  
+  avg_spikes <- sapply(session_data$spks, function(trial) sum(trial) / length(trial))
+  
+
+  session_df <- data.frame(Session = session_num, Trial = 1:length(avg_spikes), SpikesPerTrial = avg_spikes)
+  
+  avg_spikes_per_trial <- rbind(avg_spikes_per_trial, session_df)
+}
+
+ggplot(avg_spikes_per_trial, aes(x = Trial, y = SpikesPerTrial, color = as.factor(Session))) +
+  geom_line() +
+  labs(x = "Trial Number", y = "Average Spikes per Trial", color = "Session")
+
+```
+
+This graph here shows us the average spikes per trial for the 4 sessions above. The reasoning for this is that we can see the activation of spike per trial based on the session allows to build a patter in which a predictive model that is effective to be used. We can see that the average spike per trial in this data doesn't have extreme variability. We can see that the number of spikes is different for example session 1 being the highest average spikes per trial but that does not eliminate the small difference in this. As a result this would be useful in our integration as we can use the fact that the data falling in between .02 to .04 average spikes per trial will allow us to add vital information to be included into our data integration. We can see that the trend for the amount of spikes per trial is constant as the number of trials go on. With in each session there isn't great variability overall showing a consistent pattern in the average spikes per trial. 
+
+
+
+```{r}
+
+avg_spikes_per_neuron <- data.frame()
+
+sessions_of_interest <- c(1:18)
+
+max_trials <- max(sapply(sessions_of_interest, function(session_num) length(session[[session_num]]$spks)))
+
+for (session_num in sessions_of_interest) {
+  session_data <- session[[session_num]]
+  
+  avg_spikes <- sapply(session_data$spks, function(trial) mean(rowSums(trial)))
+  
+  if (length(avg_spikes) < max_trials) {
+    avg_spikes <- c(avg_spikes, rep(NA, max_trials - length(avg_spikes)))
+  }
+  
+  session_df <- data.frame(Session = session_num, Trial = 1:max_trials, SpikesPerNeuron = avg_spikes)
+  
+  avg_spikes_per_neuron <- rbind(avg_spikes_per_neuron, session_df)
+}
+
+ggplot(avg_spikes_per_neuron, aes(x = Trial, y = SpikesPerNeuron, color = as.factor(Session))) +
+  geom_line() +
+  labs(x = "Trial Number", y = "Average Spikes per Neuron", color = "Session") +
+  theme_minimal()
+
+```
+
+Here we created a graph showing average spikes per neuron vs the trial number for all 18 sessions. The graph here was designed to show use the average spikes per neuron across all trials. We can see that between the data each session stay fairly constant when observing their inter session trends. The amount of spikes per neuron will not alter greatly from session to session, creating the contsant trends we currently observe. But it dopes appear with session 13 as we also observed in the pulse rate vs density graph to be a bit of an outlier. In session 13 we can that the average spikes per neuron is greatly higher than most of the other session creating some variability when we include this into our data integration. 
+
+
+
+
+
+
+
+```{r}
+
+neurons_per_trial <- lapply(session, function(x) sapply(x$spks, function(y) sum(rowSums(y) > 0)))
+
+
+trial_data <- data.frame(
+  Session = rep(1:length(session), sapply(neurons_per_trial, length)),
+  Trial = unlist(lapply(neurons_per_trial, seq_along)),
+  Neurons = unlist(neurons_per_trial)
+)
+
+
+library(ggplot2)
+ggplot(trial_data, aes(x = Trial, y = Neurons, color = factor(Session))) +
+  geom_line() +
+  labs(x = "Trial Number", y = "Average Neurons per Trial", color = "Session") +
+  ggtitle("Average Neurons per Trial vs. Trial Number by Session") +
+  theme_minimal()
+
+```
+
+Here we created an average neuron per trial vs trial number graph to observe the trend for neurons and the amount involved within each trial. The average number of neuron per trial does also seem to appear to stay relatively constant. For each session ther is a constant amount of average neuron per trial. We can also see that session 4 does appear to be the highest at around 600 neurons per trial with a singular trial reaching 800 neurons per trial which can be seen as a clear obvious outlier. This data will be useful for our data integration as the consistent average neuron will better allow us to design a model prediction that will take into consideration a variety of variability to predict the feedbakc type. 
+
+
+
+
+
+
+
+```{r}
+average_spike_area_session <- function(this_session) {
+  spk_average_trial = numeric(length(this_session$spks))
+  
+  for (i.t in 1:length(this_session$spks)) {
+    spk_count = apply(this_session$spks[[i.t]], 1, sum)
+    
+    spk_average_trial[i.t] = mean(tapply(spk_count, this_session$brain_area, mean))
+  }
+  
+  return(mean(spk_average_trial))
+}
+
+spk_average_session = numeric(length(session))
+
+for (i.s in 1:length(session)) {
+  spk_average_session[i.s] = average_spike_area_session(session[[i.s]])
+}
+
+print(spk_average_session)
+
+```
+Here we created a summary session that shows the average number of spikes across all neurons for each session. We can see the that the sessions don't have lower than .6 neuron per session for each neuron on average up to 2.7 neuron per trial. This data is actually is useful for the simple fact that session 13 and session 3 where we have seen in the above graphs that were outliers have very high average spikes per neuron when for the whole session. This session level computation will benefit our data integration as there does seem to be an apparent pattern with spikes per neuron and pulse rate/spikes per neuron per trial. This iwll be important to incorperate. 
+
+
+
+
+
+```{r}
+
+active_neurons <- numeric(length(session))
+avg_spikes_per_active_neuron <- numeric(length(session))
+
+for (i in 1:length(session)) {
+  spks.trial = session[[i]]$spks[[1]]
+  
+  total.spikes = apply(spks.trial, 1, sum)
+  
+  active_neurons[i] <- sum(total.spikes > 0)
+  avg_spikes_per_active_neuron[i] <- mean(total.spikes[total.spikes > 0])
+}
+
+print(active_neurons)
+
+
+```
+Here we have the average number of active neurons for each session for trial 1 only. This gives us an understanding of the amount of neurons active in this stage and allows us to see the variability of the sessions for the same trial number. This tells us that it is important to include average number of neurons per session/trial as it will factor for this large variability allowing us to build a more accurate model.
+
+
+
+
+## Section 3: Data Integration
+
+
+Data integration: 
+```{r}
+session_summary <- list()
+
+for (i in 1:18) {
+  for (j in 1:length(session[[i]]$feedback_type)) {
+    
+    spks_values <- c(session[[i]]$spks[[j]])
+    spks_mean <- mean(spks_values)
+    spks_sd <- sd(spks_values)
+    spks_max <- max(spks_values)
+    
+    avg_spikes_per_trial <- mean(spks_values)
+
+    pulse_rate <- spks_mean / ncol(session[[i]]$spks[[j]])
+
+  
+    avg_spikes_per_neuron_per_trial <- mean(rowSums(session[[i]]$spks[[j]]))
+
+    pulse_rate_vs_density <- pulse_rate / density(spks_values)$x[which.max(density(spks_values)$y)]
+
+    
+    avg_spikes_per_neuron_per_trial_vs_density <- avg_spikes_per_neuron_per_trial / density(spks_values)$x[which.max(density(spks_values)$y)]
+
+    
+    session_summary[[length(session_summary) + 1]] <- data.frame(
+      session_number = i,
+      feedback_type = session[[i]]$feedback_type[j],
+      contrast_left = session[[i]]$contrast_left[j],
+      contrast_right = session[[i]]$contrast_right[j],
+      spks_mean = spks_mean,
+      spks_sd = spks_sd,
+      spks_max = spks_max,
+      pulse_rate = pulse_rate,
+      avg_spikes_per_neuron = avg_spikes_per_neuron_per_trial,
+      avg_spikes_per_trial = avg_spikes_per_trial,
+      pulse_rate_vs_density = pulse_rate_vs_density,
+      avg_spikes_per_neuron_per_trial_vs_density = avg_spikes_per_neuron_per_trial_vs_density
+    )
+  }
+}
+
+
+session_all_df <- do.call(rbind, session_summary)
+
+```
+For my data integration I decided to include the variables I deemed the most effective and reliable variables to help me build my model is spks_mean, spks_sd, spks_max, pulse_rate, avg_spikes_per_neuron, avg_spikes_per_trial, pulse_rate_vs_density, avg_spikes_per_neuron_per_trial_vs_density. We focused mainly on spikes as in our exploratory analysis we determined we best say a trend and observation when looking at spikes. This will allow us to build an effective model that can capture all spikes at different varying points and includes outliers. This way we are able to caputre the whole data set and able to make a reliable model that will factor these outliers. 
+
+## Section 4: Predictive modeling
+
+PCA test: 
+```{r}
+zero_variance_cols <- sapply(session_all_df, function(x) var(x, na.rm = TRUE) == 0)
+
+session_all_df <- session_all_df[ , !zero_variance_cols]
+
+pca_result <- prcomp(session_all_df, scale. = TRUE)
+
+plot(pca_result, type = "l")
+
+```
+
+
+For my PCA test we can see that PC1, PC2, and PC3 are PC component with the highest degree of variances that would be perfect to incorporate into the logistic regression model. We can see that PC 4-10 all have variances at or below 1 where we decided the best cut off to be. PC 4-10 do not have enough variances to be included into our logistic model to be fully tested. Unfortunately we could not incorporate PC1-3 into our logistic regression model as it would give too many errors. This simply made it too difficult to process the model and no matter what adjustments I tried to make the code would not properly run. The one time that I did add PC 1-3 the misclassification rate was at .401 making it very inaccurate and indicating that there was an error. 
+
+
+
+Logistic Regression Model:
+```{r}
+
+session_all_df$feedback_type <- ifelse(session_all_df$feedback_type == -1, 0, 1)
+
+model <- glm(feedback_type ~ contrast_left + contrast_right + spks_mean + spks_sd + spks_max + pulse_rate + avg_spikes_per_neuron + avg_spikes_per_trial + pulse_rate_vs_density + avg_spikes_per_neuron_per_trial_vs_density, 
+             data = session_all_df, 
+             family = binomial(link = "logit"))
+
+
+
+```
+
+For our logistic regression model we we set our feedback results to be binary for the integrated data. We did this so that the logistic regression model could properly run. The logistic regression model requires binary numbers inorder to run thus making it difficult to use -1, 1. As a result I converted the feedback_result into binary with 1 = success and -1 being failure. 
+
+
+
+
+```{r}
+setwd("C:/Users/Sina Khazaei/Desktop/test")
+test=list()
+for(i in 1:2){
+  test[[i]]=readRDS(paste("C:/Users/Sina Khazaei/Desktop/test/test",i,'.rds',sep=''))
+  print(test[[i]]$mouse_name)
+  print(test[[i]]$date_exp)
+
+}
+
+
+```
+Uploading test data into R. 
+
+
+
+```{r}
+
+
+n.test=length(test)
+
+meta <- tibble(
+  mouse_name = rep('name',n.test),
+  date_exp =rep('dt',n.test),
+  n_brain_area = rep(0,n.test),
+  n_neurons = rep(0,n.test),
+  n_trials = rep(0,n.test),
+  success_rate = rep(0,n.test)
+)
+
+
+for(i in 1:n.test){
+  tmp = test[[i]]; # Change 'session' to 'test'
+  meta[i,1]=tmp$mouse_name;
+  meta[i,2]=tmp$date_exp;
+  meta[i,3]=length(unique(tmp$brain_area));
+  meta[i,4]=dim(tmp$spks[[1]])[1];
+  meta[i,5]=length(tmp$feedback_type);
+  meta[i,6]=mean(tmp$feedback_type+1)/2;
+  
+}
+
+
+
+kable(meta, format = "html", table.attr = "class='table table-striped'",digits=2) 
+
+
+```
+Here is a summary of the test data across all of the test data. We can see that there are two mice we are testing for Cori and Lederberg. This gives us a better understanding of what the test data has in terms of brain area, neuron number and success rate. 
+
+
+
+
+```{r}
+test_summary <- list()
+
+test_length <- length(test)
+
+for (i in 1:test_length) {
+  for (j in 1:length(test[[i]]$feedback_type)) {
+    spks_values <- c(test[[i]]$spks[[j]])
+    spks_mean <- mean(spks_values)
+    spks_sd <- sd(spks_values)
+    spks_max <- max(spks_values)
+    
+    avg_spikes_per_trial <- mean(spks_values)
+
+    pulse_rate <- spks_mean / ncol(test[[i]]$spks[[j]])
+    avg_spikes_per_neuron_per_trial <- mean(rowSums(test[[i]]$spks[[j]]))
+    pulse_rate_vs_density <- pulse_rate / density(spks_values)$x[which.max(density(spks_values)$y)]
+    avg_spikes_per_neuron_per_trial_vs_density <- avg_spikes_per_neuron_per_trial / density(spks_values)$x[which.max(density(spks_values)$y)]
+  
+    test_summary[[length(test_summary) + 1]] <- data.frame(
+      session_number = i,
+      feedback_type = test[[i]]$feedback_type[j],
+      contrast_left = test[[i]]$contrast_left[j],
+      contrast_right = test[[i]]$contrast_right[j],
+      spks_mean = spks_mean,
+      spks_sd = spks_sd,
+      spks_max = spks_max,
+      pulse_rate = pulse_rate,
+      avg_spikes_per_neuron = avg_spikes_per_neuron_per_trial,
+      avg_spikes_per_trial = avg_spikes_per_trial,
+      pulse_rate_vs_density = pulse_rate_vs_density,
+      avg_spikes_per_neuron_per_trial_vs_density = avg_spikes_per_neuron_per_trial_vs_density
+    )
+  }
+}
+
+test_all_df <- do.call(rbind, test_summary)
+
+
+```
+
+Here we run our test data through the same data integration we did with session_all_df. The reasoning for this is that this will allow us to determine our estimates from comparing the results of our test data to that of session_all which has the integration for all sessions 1-18(except the removed trials). Along with this we are computing mean, s.d., etc. from each trial in each session. As a result we have to do this to prepare our test data to be compared to the features we designed for session_all. It is also important to use the same features as our model only knows how to for the data we have integrated in session_all. This will then be used to run our data through the prediction model.
+
+
+
+## Section 5
+
+```{r}
+test_all_df$feedback_type <- ifelse(test_all_df$feedback_type == -1, 0, 1)
+
+test_all_df$predicted <- ifelse(predict(model, newdata = test_all_df, type = "response") > 0.5, 1, 0)
+misclassification_rate <- mean(test_all_df$predicted != test_all_df$feedback_type)
+print(paste("Misclassification Rate: ", misclassification_rate))
+
+
+
+```
+After running our model we can see that we have a misclassification rate of .275 which is within the prediction criteria. This means that we got 27.5 of our predictions wrong while 72.5 was correct for determining our feedback type.
+
+
+## Section 6: Discussion: 
+The results of our prediction model fits the requirement of at least above 70% accuracy in our prediction. We got a misclassification .275(27.5%) which is rather high and through looking over my project I do believe that this is a result of our data integration model having too many variables causing the logistic regression model to make these errors.The way I would improve this would be through improving my data integration that would be ran through the logistic regression model. This would potentially reduce misclassification error as we can currently see that there is a potential variable causing potential doubtful cases.  The next step would be to further improve my data integration. This would require us to further conduct more exploratory analysis as this would allow us to find better trends or correlative data to help improve our model to make it more accurate. I also believe some of the variables I put into our prediction model may potentially not be beneficial to our goal in helping predict our feedback prediction model more accurate. 
+
+```{r, ref.label=knitr::all_labels(),echo=TRUE,eval=FALSE}
+
+```
+
+
+
+
+
+
+
+
+
